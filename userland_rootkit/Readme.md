@@ -1,4 +1,4 @@
-# Generation 1 User-Space Rootkit (LD_PRELOAD)
+# Generation 1 User-Space Rootkit (LD_PRELOAD/ld.so.preload Hooking)
 
 ## Overview
 This project is a user-space hooking experiment for academic research in a controlled lab.
