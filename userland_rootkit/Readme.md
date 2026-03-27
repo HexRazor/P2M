@@ -1,53 +1,64 @@
-# Generation 1 User-Space Rootkit (LD_PRELOAD/ld.so.preload Hooking)
+# Generation 1 User-Space function Hooking Demo
 
 ## Overview
-This project is a user-space hooking experiment for academic research in a controlled lab.
-It uses dynamic linker preloading to intercept selected libc calls.
+This project is a simple user-space function-hooking experiment for academic project.
+It builds a shared object that is intended to be loaded through the dynamic linker preload mechanism.
 
 ## Important Notice
-This code is for authorized, isolated testing only.
-Do not run it on production systems or systems you do not own and control.
+Use only in authorized, isolated test environments.
+Do not run on production systems or systems you do not own and control.
 
-## What It Hooks
-The shared library currently overrides:
+## Constants Used By The Current Code
+- `MAGIC_PORT`: `58231`
+- `HIDDEN_PREFIX`: `7fd5bc27_735a_4172-9d66_d94c102fc43f`
+- `EVIL_LIB`: `libsystemd-auth.so`
+- `PRELOAD_FILE`: `/etc/ld.so.preload`
+
+## Hooked Functions
+The current implementation in `main.c` overrides these libc interfaces:
 
 - `readdir`
+- `read`
+- `__xstat`
+- `stat`
+- `open`
 - `accept`
 - `accept4`
 - `write`
-- `open`
-- `openat`
 
-## Observed Behavior
-
-1. File and directory listing filtering
-The `readdir` hook skips entries that match (will be improoved soon ):
-- `config`
-- `rootkit`
-- `secret`
-
-2. Socket accept inspection
-The `accept` and `accept4` hooks pass accepted sockets to `inspect_and_shell`.
-If the peer source port equals `61004` (`MAGIC_SOURCE_PORT`), the code forks and tries to execute `/bin/sh` with stdio redirected to that socket.
-
-3. Output suppression
-The `write` hook scans outgoing buffers and suppresses content containing:
-- `config`
-- `rootkit`
-- `secret`
-
-4. Access redirection for selected paths
-The `open` and `openat` hooks redirect attempts to open paths containing:
+## Current Behavior
+1. Entry filtering in directory listings
+`readdir` skips entries whose names contain any of:
+- `HIDDEN_PREFIX`
+- `EVIL_LIB`
 - `ld.so.preload`
-- `libsystemd-auth.so`
-to `/dev/null`.
+
+2. Read-buffer scrubbing
+`read` clears returned buffers when matched content includes:
+- `HIDDEN_PREFIX`
+- `EVIL_LIB`
+
+3. Metadata manipulation for selected paths
+`stat` and `__xstat` set `st_size = 0` when the path is considered hidden.
+
+4. Path redirection
+`open` redirects hidden paths to `/dev/null`.
+
+5. Socket-triggered shell path
+`accept` and `accept4` check incoming IPv4 source port values.
+When source port matches `MAGIC_PORT`, child-process logic attempts to exec `/bin/sh` with stdio redirected to the accepted socket.
+
+6. Write output suppression
+`write` returns success without writing when outgoing data matches:
+- `HIDDEN_PREFIX`
+- `EVIL_LIB`
 
 ## Build
 Requirements:
 - `gcc`
 - `make`
 
-Build command:
+Build the shared object:
 
 ```bash
 make
@@ -56,18 +67,7 @@ make
 Output artifact:
 - `libsystemd-auth.so`
 
-## Lab-Only Execution Example
-1-Move the payload to a legitimate-looking system directory:
-
-```bash
-mv libsystemd-auth.so /lib/x86_64-linux-gnu/
-```
-2-Inject the payload into the dynamic linker's preload configuration:
-
-```bash
-echo "/lib/x86_64-linux-gnu/libsystemd-auth.so" >> /etc/ld.so.preload
-```
-## Clean
-```bash
-make clean
-```
+## Makefile Targets
+- `make`: build `libsystemd-auth.so`
+- `make clean`: remove object and shared library artifacts
+- `make install`: copy library to `/usr/local/lib/` and append it to `/etc/ld.so.preload`
